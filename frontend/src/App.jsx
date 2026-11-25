@@ -1,6 +1,6 @@
 import React from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
-import Overview from './pages/Overview'
+import Dashboard from './pages/Dashboard'
 import Scans from './pages/Scans'
 import Chutes from './pages/Chutes'
 import RoutesPage from './pages/RoutesPage'
@@ -8,15 +8,17 @@ import Bags from './pages/Bags'
 import Diverts from './pages/Diverts'
 import Shifts from './pages/Shifts'
 import Settings from './pages/Settings'
+import Audit from './pages/Audit'
 
 const links = [
-  ['/', '总览'],
+  ['/', '调度屏'],
   ['/扫描', '过机扫描'],
   ['/口门', '口门'],
   ['/路由表', '路由表'],
   ['/回流', '错分回流'],
   ['/封袋', '封袋'],
   ['/班次', '班次对账'],
+  ['/审计', '审计'],
   ['/设置', '设置'],
 ]
 
@@ -38,13 +40,14 @@ export default function App() {
       </header>
       <main className="main">
         <Routes>
-          <Route path="/" element={<Overview />} />
+          <Route path="/" element={<Dashboard />} />
           <Route path="/扫描" element={<Scans />} />
           <Route path="/口门" element={<Chutes />} />
           <Route path="/路由表" element={<RoutesPage />} />
           <Route path="/回流" element={<Diverts />} />
           <Route path="/封袋" element={<Bags />} />
           <Route path="/班次" element={<Shifts />} />
+          <Route path="/审计" element={<Audit />} />
           <Route path="/设置" element={<Settings />} />
         </Routes>
       </main>

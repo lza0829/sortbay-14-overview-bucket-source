@@ -1,7 +1,8 @@
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from app.db import db, rows_to_list, row_to_dict
+from app.db import rows_to_list, row_to_dict, read_tx, write_tx
+from app.services import ledger
 from app.services.common import audit, now_str
 
 router = APIRouter(tags=["班次"])
@@ -14,13 +15,14 @@ class ShiftIn(BaseModel):
 
 @router.get("/班次")
 def list_shifts():
-    with db() as conn:
+    with read_tx() as conn:
         return rows_to_list(conn.execute("SELECT * FROM shifts ORDER BY id DESC").fetchall())
 
 
 @router.get("/班次/对账")
 def reconcile(shift_id: int | None = None):
-    with db() as conn:
+    """班次对账与调度屏同源：四格由事件重放给出，另附扫描册/袋册旁证与差异。"""
+    with read_tx() as conn:
         if shift_id is None:
             shift = conn.execute("SELECT * FROM shifts ORDER BY id DESC LIMIT 1").fetchone()
         else:
@@ -28,36 +30,25 @@ def reconcile(shift_id: int | None = None):
         if not shift:
             raise HTTPException(404, "班次不存在")
         sid = shift["id"]
-        scan_n = conn.execute("SELECT COUNT(*) c FROM scans WHERE shift_id=?", (sid,)).fetchone()["c"]
-        routed = conn.execute(
-            "SELECT COUNT(*) c FROM scans WHERE shift_id=? AND status IN ('已路由','已入袋','已封袋')",
-            (sid,),
-        ).fetchone()["c"]
-        bag_n = conn.execute("SELECT COUNT(*) c FROM bags WHERE shift_id=?", (sid,)).fetchone()["c"]
-        sealed_bag = conn.execute(
-            "SELECT COUNT(*) c FROM bags WHERE shift_id=? AND status='已封袋'", (sid,)
-        ).fetchone()["c"]
-        divert_n = conn.execute(
-            "SELECT COUNT(*) c FROM divert_batches WHERE shift_id=?", (sid,)
-        ).fetchone()["c"]
-        pending = conn.execute(
-            "SELECT COUNT(*) c FROM scans WHERE shift_id=? AND status IN ('待路由','错分回流')",
-            (sid,),
-        ).fetchone()["c"]
+        ver = ledger.verify(conn, shift_id=sid)
+        cells = ver["四格"]
         return {
             "班次": row_to_dict(shift),
-            "扫描总数": scan_n,
-            "已路由及以上": routed,
-            "袋数": bag_n,
-            "已封袋数": sealed_bag,
-            "回流批次数": divert_n,
-            "未清件数": pending,
+            "口径": "事件流重放",
+            "四格": cells,
+            "扫描总数": ver["扫描册件数"],
+            "重放件数": ver["重放件数"],
+            "已封袋数": cells[ledger.格已封袋],
+            "未清件数": cells[ledger.格待路由] + cells[ledger.格错分回流] + cells[ledger.格已路由],
+            "差异": ver["差异"],
+            "审计缺口": ver["审计缺口"],
+            "对齐": ver["对齐"],
         }
 
 
 @router.post("/班次")
 def create_shift(body: ShiftIn):
-    with db() as conn:
+    with write_tx() as conn:
         open_one = conn.execute("SELECT id FROM shifts WHERE sealed=0").fetchone()
         if open_one:
             raise HTTPException(400, "仍有未封班班次，先封班再开新班")
@@ -69,8 +60,7 @@ def create_shift(body: ShiftIn):
         except Exception as e:
             raise HTTPException(400, f"开班失败: {e}")
         row = conn.execute(
-            "SELECT * FROM shifts WHERE business_day=? AND name=?",
-            (body.营业日, body.班次名),
+            "SELECT * FROM shifts WHERE business_day=? AND name=?", (body.营业日, body.班次名)
         ).fetchone()
         audit(conn, "班次", row["id"], "开班", body.班次名)
         return row_to_dict(row)
@@ -78,21 +68,19 @@ def create_shift(body: ShiftIn):
 
 @router.post("/班次/{shift_id}/封班")
 def seal_shift(shift_id: int):
-    with db() as conn:
+    with write_tx() as conn:
         shift = conn.execute("SELECT * FROM shifts WHERE id=?", (shift_id,)).fetchone()
         if not shift:
             raise HTTPException(404, "班次不存在")
         if shift["sealed"]:
             raise HTTPException(400, "已封班")
-        pending = conn.execute(
-            "SELECT COUNT(*) c FROM scans WHERE shift_id=? AND status IN ('待路由','错分回流','已路由','已入袋')",
-            (shift_id,),
-        ).fetchone()["c"]
+        # 封班闸门用重放口径，不再信任扫描册可变状态
+        rp = ledger.replay(conn, shift_id=shift_id)
+        pending = [sid for sid, st in rp.scans.items() if st.cell() != ledger.格已封袋]
         if pending:
-            raise HTTPException(400, f"仍有未封袋/未路由件 {pending}，禁止封班")
+            raise HTTPException(400, f"仍有未封袋件 {len(pending)}，禁止封班")
         conn.execute(
-            "UPDATE shifts SET sealed=1, sealed_at=? WHERE id=?",
-            (now_str(), shift_id),
+            "UPDATE shifts SET sealed=1, sealed_at=? WHERE id=?", (now_str(), shift_id)
         )
         audit(conn, "班次", shift_id, "封班", "")
         return row_to_dict(conn.execute("SELECT * FROM shifts WHERE id=?", (shift_id,)).fetchone())

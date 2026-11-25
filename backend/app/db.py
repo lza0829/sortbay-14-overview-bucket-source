@@ -92,14 +92,34 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- 调度屏四格真源：装载 / 裁决 / 回流 / 开袋 / 入袋 / 封袋 的只追加事件流。
+-- 四格、口门在口、袋册、扫描册、审计重放一律由本表重放投影得到，禁止另立可变计数。
+CREATE TABLE IF NOT EXISTS sort_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  shift_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  scan_id INTEGER,
+  bag_id INTEGER,
+  batch_id INTEGER,
+  chute_id INTEGER,
+  note TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT '系统',
+  dedup_key TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(shift_id) REFERENCES shifts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_sort_events_scan ON sort_events(scan_id, id);
+CREATE INDEX IF NOT EXISTS idx_sort_events_bag ON sort_events(bag_id, id);
+CREATE INDEX IF NOT EXISTS idx_sort_events_shift ON sort_events(shift_id, id);
 """
 
 
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -116,9 +136,56 @@ def db():
         conn.close()
 
 
+@contextmanager
+def write_tx():
+    """写口事务：BEGIN IMMEDIATE 一开始就抢写锁，装载与封袋并发不会读到中间态。
+
+    事件追加、缓存重算、审计落库必须同处一个事务；任一步失败整笔回滚，
+    不留半截回执（四格与点计不会出现一格加一格减的漂数）。
+    """
+    conn = connect()
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def read_tx():
+    """读快照事务：在 WAL 下让身份表与事件流处于同一快照，重放不会跨交易。"""
+    conn = connect()
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN")
+        yield conn
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def init_db() -> None:
-    with db() as conn:
+    conn = connect()
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict | None:

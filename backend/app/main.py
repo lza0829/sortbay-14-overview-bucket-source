@@ -3,9 +3,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import PROJECT_NAME
 from app.routers import audit, bags, chutes, dashboard, diverts, lines, routes, scans, settings, shifts
-from app.seed import seed_if_empty
+from app.seed import seed_if_empty, backfill_events
 
 seed_if_empty()
+backfill_events()
 
 app = FastAPI(title=PROJECT_NAME)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])

@@ -91,6 +91,12 @@ body {
   border-left: 5px solid var(--rust);
   padding-left: 0.55rem;
 }
+.panel h3 {
+  margin: 1.1rem 0 0.5rem;
+  font-size: 0.98rem;
+  color: var(--rust-deep);
+}
+.panel .stat .muted { font-size: 0.74rem; margin-top: 0.2rem; }
 
 .grid {
   display: grid;

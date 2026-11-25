@@ -17,6 +17,16 @@ def current_shift(conn):
     return row
 
 
+def shift_or_404(conn, shift_id: int | None):
+    if shift_id is None:
+        row = conn.execute("SELECT * FROM shifts ORDER BY id DESC LIMIT 1").fetchone()
+    else:
+        row = conn.execute("SELECT * FROM shifts WHERE id=?", (shift_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "班次不存在")
+    return row
+
+
 def audit(conn, kind: str, ref_id: int | None, action: str, note: str = "") -> None:
     conn.execute(
         "INSERT INTO audit_events(kind, ref_id, action, created_at, note) VALUES (?, ?, ?, ?, ?)",
